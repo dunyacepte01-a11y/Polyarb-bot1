@@ -1,1 +1,1 @@
-worker: python bot_momentum.py
+worker: python bot.py
