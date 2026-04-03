@@ -61,7 +61,7 @@ def fetch_market():
         data = resp.json()
         now = time.time()
         for e in data:
-            if "btc-updown-5m" not in e.get("seriesSlug",""):
+            if "btc-up-or-down-5m" not in e.get("seriesSlug",""):
                 continue
             try:
                 end_ts = datetime.fromisoformat(e["endDate"].replace("Z","+00:00")).timestamp()
