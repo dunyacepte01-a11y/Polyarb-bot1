@@ -1,4 +1,4 @@
-import asyncio, websockets, json, os, time, random, requests, threading
+import asyncio, websockets, json, os, time, random, requests
 from datetime import datetime
 from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
@@ -23,6 +23,7 @@ last_trade_time = 0
 current_market = None
 market_last_update = 0
 bot_active = True
+tg_offset = 0
 client = ClobClient(host="https://clob.polymarket.com",chain_id=137,key=PRIVATE_KEY,signature_type=0,funder=FUNDER)
 
 def tg(msg):
@@ -31,52 +32,25 @@ def tg(msg):
             json={"chat_id":TG_CHAT,"text":msg,"parse_mode":"HTML"},timeout=5)
     except: pass
 
-def tg_updates():
-    offset = 0
-    while True:
-        try:
-            r = requests.get("https://api.telegram.org/bot"+TG_TOKEN+"/getUpdates",
-                params={"offset":offset,"timeout":30},timeout=35)
-            for u in r.json().get("result",[]):
-                offset = u["update_id"]+1
-                msg = u.get("message",{}).get("text","")
-                chat = str(u.get("message",{}).get("chat",{}).get("id",""))
-                if chat == TG_CHAT:
-                    handle_command(msg)
-        except: time.sleep(5)
-
 def handle_command(msg):
-    global bot_active, balance, wins, losses, trades
+    global bot_active
     msg = msg.strip().lower()
-    if msg == "/durum" or msg == "/status":
+    if msg in ["/durum","/status"]:
         wr = wins/trades*100 if trades > 0 else 0
         net = balance - start_balance
-        mode = "📄 PAPER" if PAPER_TRADE else "💰 GERÇEK"
+        mode = "PAPER" if PAPER_TRADE else "GERÇEK"
         market = current_market["title"] if current_market else "Yok"
-        tg(f"""📊 <b>BOT DURUMU</b>
-Mode: {mode}
-Bakiye: ${round(balance,2)}
-Net: ${round(net,2)}
-İşlem: {trades}
-Kazanma: %{round(wr,1)}
-Market: {market}
-Aktif: {"✅" if bot_active else "❌"}""")
-    elif msg == "/durdur" or msg == "/stop":
+        tg(f"📊 <b>BOT DURUMU</b>\nMode: {mode}\nBakiye: ${round(balance,2)}\nNet: ${round(net,2)}\nİşlem: {trades}\nWR: %{round(wr,1)}\nMarket: {market}\nAktif: {'✅' if bot_active else '❌'}")
+    elif msg in ["/durdur","/stop"]:
         bot_active = False
         tg("🛑 Bot durduruldu!")
-    elif msg == "/baslat" or msg == "/start":
+    elif msg in ["/baslat","/start"]:
         bot_active = True
         tg("✅ Bot başlatıldı!")
-    elif msg == "/yardim" or msg == "/help":
-        tg("""📋 <b>KOMUTLAR</b>
-/durum - Bot durumu
-/baslat - Botu başlat
-/durdur - Botu durdur
-/bakiye - Bakiye bilgisi
-/yardim - Bu mesaj""")
-    elif msg == "/bakiye":
-        net = balance - start_balance
-        tg(f"💰 Bakiye: ${round(balance,2)}\n📈 Net: ${round(net,2)}")
+    elif msg in ["/bakiye"]:
+        tg(f"💰 Bakiye: ${round(balance,2)}\n📈 Net: ${round(balance-start_balance,2)}")
+    elif msg in ["/yardim","/help"]:
+        tg("📋 <b>KOMUTLAR</b>\n/durum - Bot durumu\n/baslat - Başlat\n/durdur - Durdur\n/bakiye - Bakiye\n/yardim - Yardım")
     else:
         tg("❓ Bilinmeyen komut. /yardim yazın.")
 
@@ -137,45 +111,39 @@ def execute_trade(direction, tp, mp, edge):
     pos = kelly_size(tp, mp)
     if pos < 0.5: return
     b = (1/mp)-1
-    if PAPER_TRADE:
-        win = random.random() < tp
-        pnl = pos*b if win else -pos
-        balance += pnl
-        trades += 1
-        if win: wins += 1
-        else: losses += 1
-        wr = wins/trades*100
-        net = balance-start_balance
-        icon = "✅" if win else "❌"
-        tg(f"""{icon} <b>{"UP" if direction=="UP" else "DOWN"}</b> | Edge: %{round(edge*100,1)}
-Pos: ${round(pos,2)} | PnL: ${round(pnl,2)}
-Bakiye: ${round(balance,2)} | WR: %{round(wr,1)}
-Net: ${round(net,2)} ({trades} işlem)""")
-    else:
-        tg(f"🔴 GERÇEK İŞLEM: {direction} ${round(pos,2)}")
+    win = random.random() < tp
+    pnl = pos*b if win else -pos
+    balance += pnl
+    trades += 1
+    if win: wins += 1
+    else: losses += 1
+    wr = wins/trades*100
+    icon = "✅" if win else "❌"
+    tg(f"{icon} <b>{direction}</b> | Edge:%{round(edge*100,1)}\nPos:${round(pos,2)} PnL:${round(pnl,2)}\nBakiye:${round(balance,2)} WR:%{round(wr,1)}\nNet:${round(balance-start_balance,2)} ({trades} işlem)")
+
+async def tg_listener():
+    global tg_offset
+    while True:
+        try:
+            r = requests.get("https://api.telegram.org/bot"+TG_TOKEN+"/getUpdates",
+                params={"offset":tg_offset,"timeout":1},timeout=5)
+            for u in r.json().get("result",[]):
+                tg_offset = u["update_id"]+1
+                msg = u.get("message",{}).get("text","")
+                chat = str(u.get("message",{}).get("chat",{}).get("id",""))
+                if chat == TG_CHAT and msg:
+                    handle_command(msg)
+        except: pass
+        await asyncio.sleep(2)
 
 async def market_updater():
     while True:
-        now = time.time()
-        if now - market_last_update > 30:
+        if time.time() - market_last_update > 30:
             fetch_market()
         await asyncio.sleep(5)
 
-async def run():
+async def trading_loop():
     global btc_price, price_history
-    mode = "📄 PAPER TRADE" if PAPER_TRADE else "💰 GERÇEK TRADE"
-    print("POLYARB BOT V7 - TELEGRAM ENTEGRE")
-    tg(f"🚀 <b>PolyArb Bot Başladı!</b>\nMode: {mode}\nBakiye: ${balance}\n\nKomutlar: /yardim")
-    try:
-        creds = client.create_or_derive_api_creds()
-        print("API OK: "+creds.api_key[:8])
-    except Exception as e:
-        print("API hata: "+str(e))
-    fetch_market()
-    if current_market:
-        print("Market: "+current_market["title"])
-    threading.Thread(target=tg_updates, daemon=True).start()
-    asyncio.create_task(market_updater())
     async with websockets.connect("wss://stream.binance.com:9443/ws/btcusdt@aggTrade",ping_interval=20) as ws:
         print("Binance BAĞLI!")
         tick = 0
@@ -207,4 +175,22 @@ async def run():
                 await asyncio.sleep(2)
                 break
 
-asyncio.run(run())
+async def main():
+    mode = "PAPER" if PAPER_TRADE else "GERÇEK"
+    print("POLYARB BOT V8")
+    try:
+        creds = client.create_or_derive_api_creds()
+        print("API OK: "+creds.api_key[:8])
+    except Exception as e:
+        print("API hata: "+str(e))
+    fetch_market()
+    if current_market:
+        print("Market: "+current_market["title"])
+    tg(f"🚀 <b>PolyArb Bot V8 Başladı!</b>\nMode: {mode}\nBakiye: ${balance}\n\n/yardim - Komutlar")
+    await asyncio.gather(
+        tg_listener(),
+        market_updater(),
+        trading_loop()
+    )
+
+asyncio.run(main())
