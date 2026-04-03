@@ -57,7 +57,7 @@ def handle_command(msg):
 def fetch_market():
     global current_market, market_last_update
     try:
-        resp = requests.get("https://gamma-api.polymarket.com/events?tag_slug=5m&limit=50&order=startDate&closed=false",timeout=4)
+        resp = requests.get("https://gamma-api.polymarket.com/events?tag_slug=5m&limit=100&closed=false",timeout=4)
         data = resp.json()
         now = time.time()
         for e in data:
